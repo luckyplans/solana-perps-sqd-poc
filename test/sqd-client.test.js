@@ -127,3 +127,74 @@ test('SQD accepts a 204 empty finalized range without retrying', async () => {
   assert.equal(calls, 1);
   assert.deepEqual(blocks, []);
 });
+
+
+test('SQD accepts a successful empty 200 response as the end of a bounded filtered remainder', async () => {
+  const bodies = [];
+  const client = new SqdClient({
+    portalUrl: 'https://portal.example/datasets/solana-mainnet',
+    requestIntervalMs: 0,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      if (body.fromBlock === 100) {
+        return new Response(JSON.stringify({
+          header: { number: 104, timestamp: 1735689600 },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/x-ndjson' },
+        });
+      }
+      return new Response('', {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson' },
+      });
+    },
+  });
+
+  const blocks = [];
+  for await (const block of client.streamInstructions({
+    fromSlot: 100,
+    toSlot: 109,
+    programId: 'Program1111111111111111111111111111111111',
+    cpiDiscriminatorHex: 'e445a52e51cb9a1d',
+  })) {
+    blocks.push(block.header.number);
+  }
+
+  assert.deepEqual(blocks, [104]);
+  assert.deepEqual(bodies.map((body) => body.fromBlock), [100, 105]);
+  assert.deepEqual(bodies.map((body) => body.toBlock), [109, 109]);
+});
+
+test('SQD gives worker-unavailable 503 responses at least five seconds before retrying', async () => {
+  let calls = 0;
+  const waits = [];
+  const retries = [];
+  const client = new SqdClient({
+    portalUrl: 'https://portal.example/datasets/solana-mainnet',
+    requestIntervalMs: 0,
+    maxRetries: 1,
+    retryBaseDelayMs: 1000,
+    sleepImpl: async (milliseconds) => waits.push(milliseconds),
+    onRetry: (details) => retries.push(details),
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('No available workers to serve the request', {
+          status: 503,
+        });
+      }
+      return new Response(JSON.stringify({ dataset: 'solana-mainnet' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.equal((await client.metadata()).dataset, 'solana-mainnet');
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [5000]);
+  assert.equal(retries[0].status, 503);
+  assert.equal(retries[0].waitMs, 5000);
+});

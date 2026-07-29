@@ -1,6 +1,6 @@
 {
   "name": "luckyplans-solana-perps-backfill-poc",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "description": "SQD Portal backfill-only GMTrade and Jupiter Perps event indexing, canonical trade history, Parquet archive, and leaderboard proof of concept for LuckyPlans.",
   "license": "UNLICENSED",

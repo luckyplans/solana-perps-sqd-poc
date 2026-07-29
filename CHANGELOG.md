@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4
+
+- Treat a successful empty HTTP 200 finalized-stream response as a valid completion for a bounded filtered remainder.
+- Prevent false `stream ended without a continuation boundary` failures when SQD skips every block in the final subrange.
+- Apply a five-second minimum cooldown to HTTP 503 worker-unavailable retries.
+- Add regression coverage for partial continuation followed by an empty bounded response and for 503 cooldown behavior.
+
 ## 0.3.3
 
 - Request `transactionIndex` in SQD transaction fields.

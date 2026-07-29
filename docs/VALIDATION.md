@@ -64,3 +64,6 @@ A fresh GMTrade market snapshot also requires a reachable Solana RPC:
 ```bash
 node --env-file=.env dist/cli.js markets-sync --platform GMTRADE --force
 ```
+
+- Regression: partial SQD continuation followed by an empty bounded finalized-stream response is accepted without skipping a failed cursor window.
+- Regression: SQD HTTP 503 worker-unavailable responses wait at least five seconds before retrying.

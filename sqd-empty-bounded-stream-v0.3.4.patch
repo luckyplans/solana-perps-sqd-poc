@@ -1,0 +1,272 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4ca88f1..0ee58aa 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,12 @@
+ # Changelog
+ 
++## 0.3.4
++
++- Treat a successful empty HTTP 200 finalized-stream response as a valid completion for a bounded filtered remainder.
++- Prevent false `stream ended without a continuation boundary` failures when SQD skips every block in the final subrange.
++- Apply a five-second minimum cooldown to HTTP 503 worker-unavailable retries.
++- Add regression coverage for partial continuation followed by an empty bounded response and for 503 cooldown behavior.
++
+ ## 0.3.3
+ 
+ - Request `transactionIndex` in SQD transaction fields.
+diff --git a/README.md b/README.md
+index 55a7336..755d22e 100644
+--- a/README.md
++++ b/README.md
+@@ -110,7 +110,7 @@ SQD_REQUEST_INTERVAL_MS=650
+ 
+ Start with 25,000 slots per application window. Smaller batches make failures cheaper to retry; larger batches reduce request overhead.
+ 
+-`SQD_SLOT_BATCH_SIZE` is the POC's durable cursor window. Portal can internally stop a single stream response before that boundary; the client automatically continues from the last returned slot plus one.
++`SQD_SLOT_BATCH_SIZE` is the POC's durable cursor window. Portal can internally stop a single stream response before that boundary; the client automatically continues from the last returned slot plus one. A successful empty HTTP 200 response for a bounded filtered remainder is treated as complete, because Portal may omit every skipped block in that remainder. HTTP 503 worker-allocation failures use a minimum five-second cooldown before retrying.
+ 
+ ## Verify SQD connectivity
+ 
+diff --git a/docs/SQD_BACKFILL.md b/docs/SQD_BACKFILL.md
+index 369efc6..3484da4 100644
+--- a/docs/SQD_BACKFILL.md
++++ b/docs/SQD_BACKFILL.md
+@@ -11,7 +11,7 @@ For each platform and slot range, the POC sends one logical query:
+   "toBlock": 311024999,
+   "fields": {
+     "block": { "number": true, "timestamp": true },
+-    "transaction": { "signatures": true, "err": true },
++    "transaction": { "transactionIndex": true, "signatures": true, "err": true },
+     "instruction": {
+       "programId": true,
+       "data": true,
+@@ -23,7 +23,9 @@ For each platform and slot range, the POC sends one logical query:
+   },
+   "instructions": [{
+     "programId": ["PROTOCOL_PROGRAM_ID"],
+-    "d8": ["0xe445a52e51cb9a1d"]
++    "d8": ["0xe445a52e51cb9a1d"],
++    "isCommitted": true,
++    "transaction": true
+   }]
+ }
+ ```
+@@ -70,36 +72,12 @@ Always compare `portalInstructions`, `targetInstructions`, `inserted`, and `fail
+ 
+ ## Related transaction inclusion
+ 
+-The instruction selector uses SQD's current relation syntax:
+-
+-```json
+-{
+-  "where": {
+-    "programId": ["..."],
+-    "d8": ["0xe445a52e51cb9a1d"],
+-    "isCommitted": true
+-  },
+-  "include": {
+-    "transaction": true
+-  }
+-}
+-```
++Requesting `fields.transaction.signatures` selects the transaction columns, but it does not by itself include the related transaction rows. Because this project posts directly to `/finalized-stream`, the raw Portal instruction selector must include `transaction: true` at the same level as `programId`, `d8`, and `isCommitted`.
+ 
+-Requesting `fields.transaction.signatures` selects the transaction columns, but it does not by itself include the related transaction rows. The raw Portal selector flag `transaction: true` is required so `instruction.transactionIndex` can be resolved to its signature without fetching every transaction in the block.
++Do not wrap these values in SDK-style `where` or `include` objects; the raw HTTP endpoint rejects those wrappers.
+ 
+-## Raw Portal request shape
++### Empty bounded responses and worker availability
+ 
+-This project posts directly to `/finalized-stream`. The raw Portal API expects instruction filters and relation flags at the same level:
+-
+-```json
+-{
+-  "instructions": [{
+-    "programId": ["PROGRAM_ID"],
+-    "d8": ["0xe445a52e51cb9a1d"],
+-    "isCommitted": true,
+-    "transaction": true
+-  }]
+-}
+-```
++A successful HTTP 200 response can contain no NDJSON records when every block in the remaining bounded range is skipped by the instruction filters. The client treats that response as completion of the remaining range instead of requiring a synthetic block boundary.
+ 
+-Do not wrap these values in `where` or `include`; those wrappers belong to higher-level SDK builder types and are rejected by the raw HTTP endpoint.
++HTTP 503 responses such as `No available workers to serve the request` are temporary Portal-capacity failures. The client retries them with exponential backoff and a minimum five-second cooldown.
+diff --git a/docs/VALIDATION.md b/docs/VALIDATION.md
+index fe8eaef..594474f 100644
+--- a/docs/VALIDATION.md
++++ b/docs/VALIDATION.md
+@@ -64,3 +64,6 @@ A fresh GMTrade market snapshot also requires a reachable Solana RPC:
+ ```bash
+ node --env-file=.env dist/cli.js markets-sync --platform GMTRADE --force
+ ```
++
++- Regression: partial SQD continuation followed by an empty bounded finalized-stream response is accepted without skipping a failed cursor window.
++- Regression: SQD HTTP 503 worker-unavailable responses wait at least five seconds before retrying.
+diff --git a/package-lock.json b/package-lock.json
+index 7162477..140a7b5 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "luckyplans-solana-perps-backfill-poc",
+-  "version": "0.3.3",
++  "version": "0.3.4",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "luckyplans-solana-perps-backfill-poc",
+-      "version": "0.3.3",
++      "version": "0.3.4",
+       "license": "UNLICENSED",
+       "devDependencies": {
+         "typescript": "^5.8.3"
+diff --git a/package.json b/package.json
+index 52d7511..848b2d7 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "luckyplans-solana-perps-backfill-poc",
+-  "version": "0.3.3",
++  "version": "0.3.4",
+   "private": true,
+   "description": "SQD Portal backfill-only GMTrade and Jupiter Perps event indexing, canonical trade history, Parquet archive, and leaderboard proof of concept for LuckyPlans.",
+   "license": "UNLICENSED",
+diff --git a/src/backfill/sqd-client.ts b/src/backfill/sqd-client.ts
+index 9382e63..1cc7e2c 100644
+--- a/src/backfill/sqd-client.ts
++++ b/src/backfill/sqd-client.ts
+@@ -192,13 +192,12 @@ export class SqdClient {
+         yield block;
+       }
+ 
+-      if (received === 0 || lastBlock < currentFrom) {
+-        throw new SqdPortalError(
+-          `SQD stream ended without a continuation boundary at slot ${currentFrom}`,
+-          response.status,
+-          path,
+-        );
+-      }
++      // A successful bounded Portal request may legitimately return an empty
++      // 200 response when every block in the remaining range was skipped by
++      // the filters. In that case the request itself is the completion
++      // boundary, even though there is no block header to advance from.
++      if (received === 0) return;
++
+       currentFrom = lastBlock + 1;
+     }
+   }
+@@ -231,6 +230,7 @@ export class SqdClient {
+ 
+         const waitMs = retryDelay(
+           response.headers.get('retry-after'),
++          response.status,
+           attempt,
+           this.retryBaseDelayMs,
+           this.retryMaxDelayMs,
+@@ -315,6 +315,7 @@ async function* readNdjson(response: Response): AsyncGenerator<SqdBlock> {
+ 
+ function retryDelay(
+   retryAfter: string | null,
++  status: number,
+   attempt: number,
+   baseMs: number,
+   maxMs: number,
+@@ -329,7 +330,13 @@ function retryDelay(
+       return Math.min(maxMs, Math.max(250, date - Date.now()));
+     }
+   }
+-  return Math.min(maxMs, baseMs * 2 ** attempt);
++  const exponential = baseMs * 2 ** attempt;
++  // Public Portal 503 responses commonly mean that no worker is currently
++  // available. Retrying after one second only adds pressure, so give worker
++  // allocation failures a larger minimum cooldown while preserving bounded
++  // exponential backoff.
++  const minimum = status === 503 ? 5_000 : 0;
++  return Math.min(maxMs, Math.max(minimum, exponential));
+ }
+ 
+ function validateSlot(value: number, name: string): void {
+diff --git a/test/sqd-client.test.js b/test/sqd-client.test.js
+index b46581c..972cf88 100644
+--- a/test/sqd-client.test.js
++++ b/test/sqd-client.test.js
+@@ -127,3 +127,74 @@ test('SQD accepts a 204 empty finalized range without retrying', async () => {
+   assert.equal(calls, 1);
+   assert.deepEqual(blocks, []);
+ });
++
++
++test('SQD accepts a successful empty 200 response as the end of a bounded filtered remainder', async () => {
++  const bodies = [];
++  const client = new SqdClient({
++    portalUrl: 'https://portal.example/datasets/solana-mainnet',
++    requestIntervalMs: 0,
++    fetchImpl: async (_url, init) => {
++      const body = JSON.parse(String(init.body));
++      bodies.push(body);
++      if (body.fromBlock === 100) {
++        return new Response(JSON.stringify({
++          header: { number: 104, timestamp: 1735689600 },
++        }), {
++          status: 200,
++          headers: { 'content-type': 'application/x-ndjson' },
++        });
++      }
++      return new Response('', {
++        status: 200,
++        headers: { 'content-type': 'application/x-ndjson' },
++      });
++    },
++  });
++
++  const blocks = [];
++  for await (const block of client.streamInstructions({
++    fromSlot: 100,
++    toSlot: 109,
++    programId: 'Program1111111111111111111111111111111111',
++    cpiDiscriminatorHex: 'e445a52e51cb9a1d',
++  })) {
++    blocks.push(block.header.number);
++  }
++
++  assert.deepEqual(blocks, [104]);
++  assert.deepEqual(bodies.map((body) => body.fromBlock), [100, 105]);
++  assert.deepEqual(bodies.map((body) => body.toBlock), [109, 109]);
++});
++
++test('SQD gives worker-unavailable 503 responses at least five seconds before retrying', async () => {
++  let calls = 0;
++  const waits = [];
++  const retries = [];
++  const client = new SqdClient({
++    portalUrl: 'https://portal.example/datasets/solana-mainnet',
++    requestIntervalMs: 0,
++    maxRetries: 1,
++    retryBaseDelayMs: 1000,
++    sleepImpl: async (milliseconds) => waits.push(milliseconds),
++    onRetry: (details) => retries.push(details),
++    fetchImpl: async () => {
++      calls += 1;
++      if (calls === 1) {
++        return new Response('No available workers to serve the request', {
++          status: 503,
++        });
++      }
++      return new Response(JSON.stringify({ dataset: 'solana-mainnet' }), {
++        status: 200,
++        headers: { 'content-type': 'application/json' },
++      });
++    },
++  });
++
++  assert.equal((await client.metadata()).dataset, 'solana-mainnet');
++  assert.equal(calls, 2);
++  assert.deepEqual(waits, [5000]);
++  assert.equal(retries[0].status, 503);
++  assert.equal(retries[0].waitMs, 5000);
++});

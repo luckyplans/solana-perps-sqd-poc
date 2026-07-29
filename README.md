@@ -110,7 +110,7 @@ SQD_REQUEST_INTERVAL_MS=650
 
 Start with 25,000 slots per application window. Smaller batches make failures cheaper to retry; larger batches reduce request overhead.
 
-`SQD_SLOT_BATCH_SIZE` is the POC's durable cursor window. Portal can internally stop a single stream response before that boundary; the client automatically continues from the last returned slot plus one.
+`SQD_SLOT_BATCH_SIZE` is the POC's durable cursor window. Portal can internally stop a single stream response before that boundary; the client automatically continues from the last returned slot plus one. A successful empty HTTP 200 response for a bounded filtered remainder is treated as complete, because Portal may omit every skipped block in that remainder. HTTP 503 worker-allocation failures use a minimum five-second cooldown before retrying.
 
 ## Verify SQD connectivity
 

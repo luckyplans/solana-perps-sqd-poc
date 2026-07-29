@@ -11,7 +11,7 @@ For each platform and slot range, the POC sends one logical query:
   "toBlock": 311024999,
   "fields": {
     "block": { "number": true, "timestamp": true },
-    "transaction": { "signatures": true, "err": true },
+    "transaction": { "transactionIndex": true, "signatures": true, "err": true },
     "instruction": {
       "programId": true,
       "data": true,
@@ -23,7 +23,9 @@ For each platform and slot range, the POC sends one logical query:
   },
   "instructions": [{
     "programId": ["PROTOCOL_PROGRAM_ID"],
-    "d8": ["0xe445a52e51cb9a1d"]
+    "d8": ["0xe445a52e51cb9a1d"],
+    "isCommitted": true,
+    "transaction": true
   }]
 }
 ```
@@ -70,36 +72,12 @@ Always compare `portalInstructions`, `targetInstructions`, `inserted`, and `fail
 
 ## Related transaction inclusion
 
-The instruction selector uses SQD's current relation syntax:
+Requesting `fields.transaction.signatures` selects the transaction columns, but it does not by itself include the related transaction rows. Because this project posts directly to `/finalized-stream`, the raw Portal instruction selector must include `transaction: true` at the same level as `programId`, `d8`, and `isCommitted`.
 
-```json
-{
-  "where": {
-    "programId": ["..."],
-    "d8": ["0xe445a52e51cb9a1d"],
-    "isCommitted": true
-  },
-  "include": {
-    "transaction": true
-  }
-}
-```
+Do not wrap these values in SDK-style `where` or `include` objects; the raw HTTP endpoint rejects those wrappers.
 
-Requesting `fields.transaction.signatures` selects the transaction columns, but it does not by itself include the related transaction rows. The raw Portal selector flag `transaction: true` is required so `instruction.transactionIndex` can be resolved to its signature without fetching every transaction in the block.
+### Empty bounded responses and worker availability
 
-## Raw Portal request shape
+A successful HTTP 200 response can contain no NDJSON records when every block in the remaining bounded range is skipped by the instruction filters. The client treats that response as completion of the remaining range instead of requiring a synthetic block boundary.
 
-This project posts directly to `/finalized-stream`. The raw Portal API expects instruction filters and relation flags at the same level:
-
-```json
-{
-  "instructions": [{
-    "programId": ["PROGRAM_ID"],
-    "d8": ["0xe445a52e51cb9a1d"],
-    "isCommitted": true,
-    "transaction": true
-  }]
-}
-```
-
-Do not wrap these values in `where` or `include`; those wrappers belong to higher-level SDK builder types and are rejected by the raw HTTP endpoint.
+HTTP 503 responses such as `No available workers to serve the request` are temporary Portal-capacity failures. The client retries them with exponential backoff and a minimum five-second cooldown.

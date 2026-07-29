@@ -192,13 +192,12 @@ export class SqdClient {
         yield block;
       }
 
-      if (received === 0 || lastBlock < currentFrom) {
-        throw new SqdPortalError(
-          `SQD stream ended without a continuation boundary at slot ${currentFrom}`,
-          response.status,
-          path,
-        );
-      }
+      // A successful bounded Portal request may legitimately return an empty
+      // 200 response when every block in the remaining range was skipped by
+      // the filters. In that case the request itself is the completion
+      // boundary, even though there is no block header to advance from.
+      if (received === 0) return;
+
       currentFrom = lastBlock + 1;
     }
   }
@@ -231,6 +230,7 @@ export class SqdClient {
 
         const waitMs = retryDelay(
           response.headers.get('retry-after'),
+          response.status,
           attempt,
           this.retryBaseDelayMs,
           this.retryMaxDelayMs,
@@ -315,6 +315,7 @@ async function* readNdjson(response: Response): AsyncGenerator<SqdBlock> {
 
 function retryDelay(
   retryAfter: string | null,
+  status: number,
   attempt: number,
   baseMs: number,
   maxMs: number,
@@ -329,7 +330,13 @@ function retryDelay(
       return Math.min(maxMs, Math.max(250, date - Date.now()));
     }
   }
-  return Math.min(maxMs, baseMs * 2 ** attempt);
+  const exponential = baseMs * 2 ** attempt;
+  // Public Portal 503 responses commonly mean that no worker is currently
+  // available. Retrying after one second only adds pressure, so give worker
+  // allocation failures a larger minimum cooldown while preserving bounded
+  // exponential backoff.
+  const minimum = status === 503 ? 5_000 : 0;
+  return Math.min(maxMs, Math.max(minimum, exponential));
 }
 
 function validateSlot(value: number, name: string): void {
