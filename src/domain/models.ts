@@ -10,6 +10,8 @@ export interface SourceInstruction {
   blockTime: Date;
   outerInstructionIndex: number;
   innerInstructionIndex: number;
+  instructionAddress?: number[];
+  accounts?: string[];
   data: Uint8Array;
 }
 

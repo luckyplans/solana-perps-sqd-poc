@@ -84,6 +84,20 @@ function booleanOption(
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function rangeOptions(options: Record<string, string | boolean>): {
+  from?: Date;
+  to?: Date;
+  fromSlot?: number;
+  toSlot?: number;
+} {
+  return {
+    from: optionalDate(options.from, 'from'),
+    to: optionalDate(options.to, 'to'),
+    fromSlot: integerOption(options['from-slot'], 'from-slot'),
+    toSlot: integerOption(options['to-slot'], 'to-slot'),
+  };
+}
+
 function keepAlive(close: () => void): void {
   const stop = (): void => {
     close();
@@ -94,13 +108,25 @@ function keepAlive(close: () => void): void {
 }
 
 function help(): void {
-  console.log(`LuckyPlans Solana perps SQD backfill POC
+  console.log(`LuckyPlans Solana perps SQD source-archive POC
 
 Commands:
   markets-sync [--platform ALL|GMTRADE|JUPITER] [--force] [--replace-manual]
   markets-show
 
   sqd-status [--from ISO --to ISO]
+
+  source-fetch --platform GMTRADE|JUPITER
+               (--from ISO --to ISO | --from-slot N --to-slot N)
+               [--batch-slots N] [--resume]
+
+  source-verify [--platform GMTRADE|JUPITER] [--from-slot N --to-slot N]
+  source-stats [--platform GMTRADE|JUPITER]
+
+  event-build --platform GMTRADE|JUPITER
+              [--from ISO --to ISO | --from-slot N --to-slot N]
+              [--resume] [--verify-chunks true|false] [--instruction-batch-size N]
+              [--sync-markets true|false]
 
   backfill --platform GMTRADE|JUPITER
            (--from ISO --to ISO | --from-slot N --to-slot N)
@@ -169,15 +195,59 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
           if (options.from === undefined || options.to === undefined) {
             throw new Error('--from and --to must be supplied together');
           }
-          const from = date(options.from, 'from');
-          const to = date(options.to, 'to');
-          output.range = await app.sqdBackfill.resolveRange({
+          output.range = await app.sourceFetch.resolveRange({
             platform: Platform.JUPITER,
-            from,
-            to,
+            from: date(options.from, 'from'),
+            to: date(options.to, 'to'),
           });
         }
         console.log(JSON.stringify(output, null, 2));
+        break;
+      }
+
+      case 'source-fetch': {
+        const selected = platform(options.platform);
+        const result = await app.sourceFetch.run({
+          platform: selected,
+          ...rangeOptions(options),
+          batchSlots: integerOption(options['batch-slots'], 'batch-slots'),
+          resume: booleanOption(options.resume),
+        });
+        console.log(JSON.stringify({ sourceFetch: result, archive: app.sourceChunks.stats(selected) }, null, 2));
+        break;
+      }
+
+      case 'source-verify': {
+        const selected = options.platform ? platform(options.platform) : undefined;
+        const manifests = selected
+          ? app.sourceChunks.listOverlapping(selected, {
+              fromSlot: integerOption(options['from-slot'], 'from-slot'),
+              toSlot: integerOption(options['to-slot'], 'to-slot'),
+            })
+          : app.sourceChunks.list();
+        for (const manifest of manifests) app.sourceChunks.verifyManifest(manifest);
+        console.log(JSON.stringify({ archiveRoot: config.sourceArchiveDir, verifiedChunks: manifests.length }, null, 2));
+        break;
+      }
+
+      case 'source-stats': {
+        console.log(JSON.stringify(app.sourceChunks.stats(options.platform ? platform(options.platform) : undefined), null, 2));
+        break;
+      }
+
+      case 'event-build': {
+        const selected = platform(options.platform);
+        const syncMarkets = booleanOption(options['sync-markets'], config.autoSyncMarkets);
+        await app.marketSync.ensureReady(selected, syncMarkets);
+        const result = await app.eventBuild.run({
+          platform: selected,
+          ...rangeOptions(options),
+          resume: booleanOption(options.resume),
+          verifyChunks: booleanOption(options['verify-chunks'], true),
+          instructionBatchSize: integerOption(options['instruction-batch-size'], 'instruction-batch-size')
+            ?? config.eventBuildBatchSize,
+        });
+        console.log(JSON.stringify({ eventBuild: result, storage: { databasePath: config.databasePath, eventCount: app.eventLogs.stats().events } }, null, 2));
         break;
       }
 
@@ -185,21 +255,16 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
         const selected = platform(options.platform);
         const syncMarkets = booleanOption(options['sync-markets'], config.autoSyncMarkets);
         await app.marketSync.ensureReady(selected, syncMarkets);
-        const from = optionalDate(options.from, 'from');
-        const to = optionalDate(options.to, 'to');
-        const fromSlot = integerOption(options['from-slot'], 'from-slot');
-        const toSlot = integerOption(options['to-slot'], 'to-slot');
+        const range = rangeOptions(options);
         const result = await app.sqdBackfill.run({
           platform: selected,
-          from,
-          to,
-          fromSlot,
-          toSlot,
+          ...range,
           batchSlots: integerOption(options['batch-slots'], 'batch-slots'),
           resume: booleanOption(options.resume),
         });
         const output: Record<string, unknown> = {
           backfill: result,
+          archive: app.sourceChunks.stats(selected),
           storage: {
             databasePath: config.databasePath,
             eventCount: app.eventLogs.stats().events,
@@ -208,8 +273,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
         if (booleanOption(options.parquet, config.parquetAutoExport)) {
           output.parquet = await app.parquet.run({
             platform: selected,
-            from,
-            to,
+            from: range.from,
+            to: range.to,
             overwrite: booleanOption(options['overwrite-parquet']),
           });
         }
@@ -222,99 +287,66 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
         if (typeof file !== 'string') throw new Error('--file is required');
         const selected = platform(options.platform);
         await app.marketSync.ensureReady(selected, config.autoSyncMarkets);
-        console.log(
-          JSON.stringify(await app.jsonlImport.run(selected, resolve(file)), null, 2),
-        );
+        console.log(JSON.stringify(await app.jsonlImport.run(selected, resolve(file)), null, 2));
         break;
       }
 
       case 'events': {
-        console.log(
-          JSON.stringify(
-            app.eventLogs.findAll({
-              platform: options.platform ? platform(options.platform) : undefined,
-              address: typeof options.address === 'string' ? options.address : undefined,
-              positionKey:
-                typeof options['position-key'] === 'string'
-                  ? options['position-key']
-                  : undefined,
-              operation: operation(options.operation),
-              from: typeof options.from === 'string' ? options.from : undefined,
-              to: typeof options.to === 'string' ? options.to : undefined,
-              limit: integerOption(options.limit, 'limit'),
-              offset: integerOption(options.offset, 'offset'),
-              order: options.order === 'desc' ? 'desc' : 'asc',
-            }),
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify(app.eventLogs.findAll({
+          platform: options.platform ? platform(options.platform) : undefined,
+          address: typeof options.address === 'string' ? options.address : undefined,
+          positionKey: typeof options['position-key'] === 'string' ? options['position-key'] : undefined,
+          operation: operation(options.operation),
+          from: typeof options.from === 'string' ? options.from : undefined,
+          to: typeof options.to === 'string' ? options.to : undefined,
+          limit: integerOption(options.limit, 'limit'),
+          offset: integerOption(options.offset, 'offset'),
+          order: options.order === 'desc' ? 'desc' : 'asc',
+        }), null, 2));
         break;
       }
 
       case 'leaderboard': {
-        console.log(
-          JSON.stringify(
-            app.leaderboard.list({
-              platform: options.platform ? platform(options.platform) : undefined,
-              from: typeof options.from === 'string' ? options.from : undefined,
-              to: typeof options.to === 'string' ? options.to : undefined,
-              limit: integerOption(options.limit, 'limit'),
-              minActions: integerOption(options.minActions, 'minActions'),
-              sortBy:
-                typeof options.sortBy === 'string'
-                  ? (options.sortBy as 'netPnl' | 'volume' | 'winRate')
-                  : undefined,
-            }),
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify(app.leaderboard.list({
+          platform: options.platform ? platform(options.platform) : undefined,
+          from: typeof options.from === 'string' ? options.from : undefined,
+          to: typeof options.to === 'string' ? options.to : undefined,
+          limit: integerOption(options.limit, 'limit'),
+          minActions: integerOption(options.minActions, 'minActions'),
+          sortBy: typeof options.sortBy === 'string'
+            ? (options.sortBy as 'netPnl' | 'volume' | 'winRate')
+            : undefined,
+        }), null, 2));
         break;
       }
 
       case 'leaderboard-rebuild': {
-        console.log(
-          JSON.stringify({
-            processed: app.leaderboard.rebuild(
-              options.platform ? platform(options.platform) : undefined,
-            ),
-          }),
-        );
+        console.log(JSON.stringify({
+          processed: app.leaderboard.rebuild(options.platform ? platform(options.platform) : undefined),
+        }));
         break;
       }
 
       case 'parquet-export': {
-        console.log(
-          JSON.stringify(
-            await app.parquet.run({
-              platform: options.platform ? platform(options.platform) : undefined,
-              from: optionalDate(options.from, 'from'),
-              to: optionalDate(options.to, 'to'),
-              outputDir: typeof options.out === 'string' ? options.out : undefined,
-              overwrite: booleanOption(options.overwrite),
-            }),
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify(await app.parquet.run({
+          platform: options.platform ? platform(options.platform) : undefined,
+          from: optionalDate(options.from, 'from'),
+          to: optionalDate(options.to, 'to'),
+          outputDir: typeof options.out === 'string' ? options.out : undefined,
+          overwrite: booleanOption(options.overwrite),
+        }), null, 2));
         break;
       }
 
       case 'stats': {
-        console.log(
-          JSON.stringify(
-            {
-              databasePath: config.databasePath,
-              historicalProvider: 'sqd-portal',
-              portalUrl: app.sqd.url,
-              ...app.eventLogs.stats(),
-              markets: app.markets.document(),
-            },
-            null,
-            2,
-          ),
-        );
+        console.log(JSON.stringify({
+          databasePath: config.databasePath,
+          historicalProvider: 'sqd-portal-via-local-source-chunks',
+          portalUrl: app.sqd.url,
+          sourceArchive: app.sourceChunks.stats(),
+          ...app.eventLogs.stats(),
+          markets: app.markets.document(),
+        }, null, 2));
         break;
       }
 

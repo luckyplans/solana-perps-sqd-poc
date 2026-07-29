@@ -1,8 +1,8 @@
-# SQD backfill notes
+# SQD source-fetch notes
 
-## Request strategy
+## Raw Portal request
 
-For each platform and slot range, the POC sends one logical query:
+Each platform/range uses a flat raw Portal selector:
 
 ```json
 {
@@ -30,54 +30,51 @@ For each platform and slot range, the POC sends one logical query:
 }
 ```
 
-The `d8` value is Anchor's event-CPI instruction tag. Jupiter/GMTrade event discriminators are bytes 8-15 and are filtered locally.
+`d8` is Anchor's event-CPI tag. Bytes 8-15 contain the protocol event discriminator, which is intentionally not filtered during source fetch.
 
-## Continuation
+## Commands
 
-Portal can close a response before `toBlock`. The first and last covered slots act as continuation boundaries. The client repeats the same query with:
+Fetch only:
 
-```text
-fromBlock = last received block + 1
+```bash
+node --env-file=.env dist/cli.js source-fetch \
+  --platform JUPITER \
+  --from 2025-01-01T00:00:00Z \
+  --to 2025-02-01T00:00:00Z \
+  --batch-slots 25000 \
+  --resume
 ```
 
-until the application window is complete.
+Build only:
 
-## Resume
+```bash
+node --env-file=.env dist/cli.js event-build \
+  --platform JUPITER \
+  --from 2025-01-01T00:00:00Z \
+  --to 2025-02-01T00:00:00Z \
+  --resume
+```
 
-The persistent cursor stores the next application slot, not the current HTTP response boundary. This guarantees that a stopped process replays at most one configured window.
+Verify:
 
-## Tuning
+```bash
+node --env-file=.env dist/cli.js source-verify --platform JUPITER
+```
 
-Start with:
+## Retry policy
+
+Default:
 
 ```env
-SQD_SLOT_BATCH_SIZE=25000
-SQD_REQUEST_INTERVAL_MS=650
+SQD_MAX_RETRIES=10
+SQD_RETRY_BASE_MS=1000
+SQD_RETRY_MAX_MS=30000
 ```
 
-Reduce slot size when:
+HTTP 429, 502, 503, and 504 are retried. `Retry-After` is honored. A worker-unavailable 503 waits at least five seconds.
 
-- responses are very large
-- retries waste too much work
-- the public endpoint times out
+## Resume policy
 
-Increase slot size when:
+Source fetch does not depend on an SQLite cursor. Completed manifests define covered slot intervals. The service fetches only uncovered gaps and writes one immutable chunk per configured window.
 
-- filters are highly selective
-- responses are small
-- request overhead dominates
-
-Always compare `portalInstructions`, `targetInstructions`, `inserted`, and `failed` after changing the batch size.
-
-
-## Related transaction inclusion
-
-Requesting `fields.transaction.signatures` selects the transaction columns, but it does not by itself include the related transaction rows. Because this project posts directly to `/finalized-stream`, the raw Portal instruction selector must include `transaction: true` at the same level as `programId`, `d8`, and `isCommitted`.
-
-Do not wrap these values in SDK-style `where` or `include` objects; the raw HTTP endpoint rejects those wrappers.
-
-### Empty bounded responses and worker availability
-
-A successful HTTP 200 response can contain no NDJSON records when every block in the remaining bounded range is skipped by the instruction filters. The client treats that response as completion of the remaining range instead of requiring a synthetic block boundary.
-
-HTTP 503 responses such as `No available workers to serve the request` are temporary Portal-capacity failures. The client retries them with exponential backoff and a minimum five-second cooldown.
+Event build uses independent per-chunk cursors. Deleting the canonical database resets build progress without deleting or redownloading source chunks.

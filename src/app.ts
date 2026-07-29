@@ -1,6 +1,9 @@
+import { SourceChunkStore } from './archive/source-chunk-store';
+import { EventBuildService } from './backfill/event-build.service';
 import { JsonlImportService } from './backfill/jsonl-import.service';
 import { SqdBackfillService } from './backfill/sqd-backfill.service';
 import { SqdClient } from './backfill/sqd-client';
+import { SqdSourceFetchService } from './backfill/sqd-source-fetch.service';
 import { AppConfig } from './config';
 import { ParquetExportService } from './export/parquet-export.service';
 import { GmTradeMarketDiscoveryService } from './markets/gmtrade-market-discovery.service';
@@ -26,6 +29,9 @@ export interface AppContext {
   leaderboard: LeaderboardService;
   rpc: SolanaRpcClient;
   sqd: SqdClient;
+  sourceChunks: SourceChunkStore;
+  sourceFetch: SqdSourceFetchService;
+  eventBuild: EventBuildService;
   sqdBackfill: SqdBackfillService;
   parquet: ParquetExportService;
   jsonlImport: JsonlImportService;
@@ -78,14 +84,23 @@ export function createApp(
       });
     },
   });
-  const sqdBackfill = new SqdBackfillService(
+  const sourceChunks = new SourceChunkStore(config.sourceArchiveDir);
+  const sourceFetch = new SqdSourceFetchService(
     config.sqdSlotBatchSize,
     sqd,
+    adapters,
+    sourceChunks,
+    store,
+    logger,
+  );
+  const eventBuild = new EventBuildService(
+    sourceChunks,
     adapters,
     ingestion,
     store,
     logger,
   );
+  const sqdBackfill = new SqdBackfillService(sourceFetch, eventBuild);
 
   return {
     config,
@@ -99,6 +114,9 @@ export function createApp(
     leaderboard,
     rpc,
     sqd,
+    sourceChunks,
+    sourceFetch,
+    eventBuild,
     sqdBackfill,
     parquet,
     jsonlImport,

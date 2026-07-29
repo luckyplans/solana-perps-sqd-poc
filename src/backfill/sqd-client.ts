@@ -39,6 +39,7 @@ export interface SqdInstruction {
   programId?: string;
   program_id?: string;
   data?: string;
+  accounts?: string[];
   transactionIndex?: number;
   transaction_index?: number;
   instructionAddress?: number[];
@@ -88,7 +89,7 @@ export class SqdClient {
     this.portalUrl = (options.portalUrl ?? 'https://portal.sqd.dev/datasets/solana-mainnet')
       .replace(/\/+$/, '');
     this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
-    this.maxRetries = options.maxRetries ?? 8;
+    this.maxRetries = options.maxRetries ?? 10;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1_000;
     this.retryMaxDelayMs = options.retryMaxDelayMs ?? 30_000;
     this.requestIntervalMs = options.requestIntervalMs ?? 650;
@@ -152,6 +153,7 @@ export class SqdClient {
             instruction: {
               programId: true,
               data: true,
+              accounts: true,
               transactionIndex: true,
               instructionAddress: true,
               isCommitted: true,

@@ -9,3 +9,5 @@ coverage/
 .DS_Store
 data/parquet/
 *.parquet
+
+data/source-archive/

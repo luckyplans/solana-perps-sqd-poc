@@ -66,6 +66,7 @@ test('SQD follows stream continuation boundaries until the requested slot is com
   assert.equal('where' in bodies[0].instructions[0], false);
   assert.equal('include' in bodies[0].instructions[0], false);
   assert.equal(bodies[0].fields.instruction.instructionAddress, true);
+  assert.equal(bodies[0].fields.instruction.accounts, true);
   assert.equal(bodies[0].fields.transaction.transactionIndex, true);
   assert.equal(bodies[0].fields.transaction.signatures, true);
 });
@@ -197,4 +198,25 @@ test('SQD gives worker-unavailable 503 responses at least five seconds before re
   assert.deepEqual(waits, [5000]);
   assert.equal(retries[0].status, 503);
   assert.equal(retries[0].waitMs, 5000);
+});
+
+test('SQD defaults to ten retries before failing a temporary service error', async () => {
+  let calls = 0;
+  const retries = [];
+  const client = new SqdClient({
+    portalUrl: 'https://portal.example/datasets/solana-mainnet',
+    requestIntervalMs: 0,
+    retryBaseDelayMs: 1,
+    retryMaxDelayMs: 1,
+    sleepImpl: async () => {},
+    onRetry: (details) => retries.push(details),
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response('No available workers to serve the request', { status: 503 });
+    },
+  });
+  await assert.rejects(() => client.metadata(), /HTTP 503/);
+  assert.equal(calls, 11);
+  assert.equal(retries.length, 10);
+  assert.equal(retries.at(-1).maxRetries, 10);
 });

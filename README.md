@@ -1,88 +1,92 @@
-# LuckyPlans Solana Perps SQD Backfill POC
+# LuckyPlans Solana Perps SQD Source Archive POC
 
-A standalone, backfill-only TypeScript proof of concept for indexing **Jupiter Perps** and **GMTrade** into a LuckyPlans-compatible canonical event-log and leaderboard model.
+A standalone TypeScript proof of concept for collecting **Jupiter Perps** and **GMTrade** Anchor CPI events from SQD, storing them as immutable local source chunks, and then building LuckyPlans-compatible `PerpTradingEventLog` rows from those files.
 
-The direct historical source is now **SQD Portal**, not Dune. The implementation calls the raw Portal HTTP API, whose instruction selectors are flat objects such as `{ programId, d8, isCommitted, transaction }` rather than the `where` / `include` wrappers used by the higher-level SDK builder:
+The architecture is intentionally two-stage:
 
 ```text
-SQD Solana finalized instruction stream
-                 ↓
-       Anchor CPI envelope filter
-                 ↓
-       Jupiter / GMTrade decoder
-                 ↓
-   canonical LuckyPlans trade actions
-                 ↓
- SQLite event log + position reducer
-                 ↓
-       daily trader leaderboard
-                 ↓
-       optional Parquet archive
+SQD Portal
+   ↓
+source-fetch
+   ↓
+immutable ordered .ndjson.gz chunks + manifests + SHA-256
+   ↓
+event-build
+   ↓
+Jupiter / GMTrade decoders
+   ↓
+LuckyPlans canonical event logs, position state, leaderboard
 ```
 
-The protocol decoders, canonical model, market registry, event-log service, leaderboard service, and SQLite schema remain independent from the historical provider so they can be moved into the LuckyPlans main repository.
+A decoder, mapper, or SQLite schema change no longer requires downloading the history from SQD again.
 
-## Why SQD
+## Source archive policy
 
-- It streams filtered Solana instructions directly by program ID and 8-byte discriminator.
-- It returns newline-delimited JSON and is processed in constant memory.
-- The backfill uses `/finalized-stream`, so no live-chain rollback handling is required.
-- Date ranges are resolved to exact Solana slots through the Portal timestamp endpoint.
-- The public Solana Portal can be tested without a Dune API key.
-- A private or self-hosted Portal can later replace the public URL without changing the protocol adapters.
+The archive uses the selected policy:
 
-## Included functionality
+> Store every committed Anchor CPI event instruction emitted by the target program, not only event discriminators currently supported by the LuckyPlans mapper.
 
-### Historical ingestion
+SQD filters remotely by:
 
-- SQD `/finalized-stream` client using Node's built-in `fetch`
-- program-level filtering for Jupiter and GMTrade
-- Anchor event-CPI discriminator filtering at the Portal
-- local filtering by supported Jupiter/GMTrade event discriminator
-- NDJSON streaming without loading a complete response into memory
-- automatic continuation when Portal ends a response before `toBlock`
-- date-to-slot resolution
-- explicit slot-range backfills
-- bounded retries, `Retry-After` support, and request pacing
-- resumable slot cursors
-- exact transaction and instruction source coordinates
+```text
+programId + Anchor CPI event tag + isCommitted
+```
 
-### Jupiter Perps
+Current Jupiter/GMTrade event filtering occurs later during `event-build`. Historical or unknown event types therefore remain available for future decoder work.
 
-- increase and instant-increase events
-- decrease and instant-decrease events
-- collateral deposit and withdrawal
-- partial and full liquidation
-- legacy, intermediate, and current historical event layouts
-- documented mainnet custody registry for SOL, ETH, BTC, USDC, USDT, and JupUSD
+## Chunk format
 
-### GMTrade
+Default archive root:
 
-- executed `TradeEvent` CPI decoder
-- before/after position state
-- open, increase, decrease, close, and collateral-only transition classification
-- realized PnL and fee buckets
-- liquidation detection
-- dynamic market discovery from zero-copy on-chain `Market` accounts
-- retention of disabled markets for historical resolution
+```text
+data/source-archive/solana-mainnet/JUPITER/
+data/source-archive/solana-mainnet/GMTRADE/
+```
 
-### Storage and APIs
+A 25,000-slot window produces:
 
-- immutable canonical `event_logs`
-- reduced `position_states`
-- materialized `leaderboard_daily`
-- `backfill_jobs` and `ingestion_cursors`
-- CLI and REST event-log queries
-- optional Zstandard-compressed Parquet partitions
-- legacy JSONL import for Dune files already downloaded before this migration
+```text
+000311081162-000311106161.v1.ndjson.gz
+000311081162-000311106161.v1.manifest.json
+```
+
+Records are compact versioned tuples in exact slot/instruction order:
+
+```json
+[
+  311081164,
+  1735689600,
+  "transaction-signature",
+  1182,
+  [4, 0],
+  ["account-1", "account-2"],
+  "base64-instruction-data"
+]
+```
+
+Tuple schema:
+
+```text
+slot
+blockTimestamp
+signature
+transactionIndex
+instructionAddress
+accounts
+instructionDataBase64
+```
+
+The program ID, slot boundaries, query policy, compression, counts, timestamps, and SHA-256 are stored once in the manifest.
+
+Files are first written with a `.partial` suffix and atomically renamed only after compression and manifest creation complete. Existing completed ranges are detected from manifests, so interrupted downloads resume without depending on the canonical SQLite database.
 
 ## Requirements
 
-- Node.js 22.5 or later
+- Node.js 22.5+
 - npm
-- internet access to the configured SQD Portal
-- a Solana RPC only when synchronizing GMTrade market metadata
-- Python and `pyarrow` only for optional Parquet export
+- access to the configured SQD Portal
+- Solana RPC only for GMTrade market metadata discovery
+- Python/pyarrow only for optional Parquet export
 
 ## Installation
 
@@ -94,59 +98,32 @@ npm test
 npm run build
 ```
 
-No SQD API key is required by the default public development endpoint.
-
 ## Configuration
 
 ```env
+DATABASE_PATH=./data/solana-perps-poc.sqlite
+SOURCE_ARCHIVE_DIR=./data/source-archive
+EVENT_BUILD_BATCH_SIZE=1000
+
 SQD_PORTAL_URL=https://portal.sqd.dev/datasets/solana-mainnet
 SQD_SLOT_BATCH_SIZE=25000
 SQD_REQUEST_TIMEOUT_MS=120000
-SQD_MAX_RETRIES=8
+SQD_MAX_RETRIES=10
 SQD_RETRY_BASE_MS=1000
 SQD_RETRY_MAX_MS=30000
 SQD_REQUEST_INTERVAL_MS=650
 ```
 
-Start with 25,000 slots per application window. Smaller batches make failures cheaper to retry; larger batches reduce request overhead.
+`SQD_MAX_RETRIES` now defaults to **10**. HTTP 429, 502, 503, and 504 responses are retried with `Retry-After` support and bounded backoff. SQD worker-unavailable 503 responses have a minimum five-second wait.
 
-`SQD_SLOT_BATCH_SIZE` is the POC's durable cursor window. Portal can internally stop a single stream response before that boundary; the client automatically continues from the last returned slot plus one. A successful empty HTTP 200 response for a bounded filtered remainder is treated as complete, because Portal may omit every skipped block in that remainder. HTTP 503 worker-allocation failures use a minimum five-second cooldown before retrying.
+## Stage 1: fetch source chunks
 
-## Verify SQD connectivity
-
-```bash
-node --env-file=.env \
-  --no-warnings=ExperimentalWarning \
-  dist/cli.js sqd-status \
-  --from 2025-01-01T00:00:00Z \
-  --to 2025-01-02T00:00:00Z
-```
-
-Expected output includes:
-
-```json
-{
-  "portalUrl": "https://portal.sqd.dev/datasets/solana-mainnet",
-  "metadata": {},
-  "range": {
-    "requestedFrom": "2025-01-01T00:00:00.000Z",
-    "requestedTo": "2025-01-02T00:00:00.000Z",
-    "fromSlot": 0,
-    "toSlot": 0
-  }
-}
-```
-
-The slot numbers above are illustrative; the command prints Portal-resolved values.
-
-## First Jupiter benchmark
-
-Use one day first:
+One-day Jupiter example:
 
 ```bash
 node --env-file=.env \
   --no-warnings=ExperimentalWarning \
-  dist/cli.js backfill \
+  dist/cli.js source-fetch \
   --platform JUPITER \
   --from 2025-01-01T00:00:00Z \
   --to 2025-01-02T00:00:00Z \
@@ -154,291 +131,105 @@ node --env-file=.env \
   --resume
 ```
 
-The result includes:
+The command archives all target-program Anchor CPI instructions. It does not decode or insert canonical events.
 
-```text
-windows             completed durable slot windows
-blocks              SQD block objects received
-portalInstructions  Anchor CPI event instructions returned by SQD
-targetInstructions  supported protocol events passed to the decoder
-filteredEvents      non-target Anchor events discarded locally
-inserted             canonical rows newly stored
-duplicate            source-coordinate duplicates
-ignored              valid events that intentionally produce no canonical action
-unsupported          recognized target events without decoder support
-failed               decode or ingestion failures
-```
-
-A successful window advances:
-
-```text
-ingestion_cursors.key = sqd:JUPITER:next-slot
-```
-
-## Full Jupiter backfill
+Explicit inclusive slots are also supported:
 
 ```bash
-node --env-file=.env \
-  --no-warnings=ExperimentalWarning \
-  dist/cli.js backfill \
+node --env-file=.env dist/cli.js source-fetch \
   --platform JUPITER \
-  --from 2025-01-01T00:00:00Z \
-  --to 2025-02-01T00:00:00Z \
+  --from-slot 311081162 \
+  --to-slot 317661530 \
   --batch-slots 25000 \
   --resume
 ```
 
-Date ranges are closed-open: `[from, to)`. They are resolved to an inclusive slot range before ingestion.
+Inspect and verify the archive:
 
-You may bypass timestamp lookup with explicit inclusive slots:
+```bash
+node --env-file=.env dist/cli.js source-stats --platform JUPITER
+node --env-file=.env dist/cli.js source-verify --platform JUPITER
+```
+
+## Stage 2: build event logs locally
+
+```bash
+node --env-file=.env \
+  --no-warnings=ExperimentalWarning \
+  dist/cli.js event-build \
+  --platform JUPITER \
+  --from 2025-01-01T00:00:00Z \
+  --to 2025-01-02T00:00:00Z \
+  --resume
+```
+
+`event-build`:
+
+1. verifies each compressed chunk checksum;
+2. reads source records in order;
+3. filters current protocol event discriminators locally;
+4. decodes Jupiter or GMTrade payloads;
+5. maps them into canonical LuckyPlans events;
+6. updates position state and leaderboard data;
+7. records a build cursor per chunk, scope, and `EVENT_BUILD_VERSION`.
+
+Changing the decoder or mapper version can use a new build version and replay the same local archive into a fresh canonical database.
+
+## Convenience command
+
+`backfill` remains as a compatibility command, but it now performs the two explicit stages in order:
 
 ```bash
 node --env-file=.env dist/cli.js backfill \
   --platform JUPITER \
-  --from-slot 311000000 \
-  --to-slot 311100000 \
-  --batch-slots 25000 \
-  --resume
-```
-
-## GMTrade backfill
-
-GMTrade events reference market-token mints. Refresh market metadata before the first run:
-
-```bash
-node --env-file=.env dist/cli.js markets-sync \
-  --platform GMTRADE \
-  --force
-```
-
-Then backfill:
-
-```bash
-node --env-file=.env \
-  --no-warnings=ExperimentalWarning \
-  dist/cli.js backfill \
-  --platform GMTRADE \
   --from 2025-01-01T00:00:00Z \
-  --to 2025-02-01T00:00:00Z \
+  --to 2025-01-02T00:00:00Z \
   --batch-slots 25000 \
   --resume
 ```
 
-With `AUTO_SYNC_MARKETS=true`, a GMTrade backfill refreshes market metadata automatically. Manual registry entries are preserved unless `--replace-manual` is explicitly used in `markets-sync`.
+It never passes SQD responses directly into the event-log mapper.
 
-## Event logs
+## GMTrade
 
-Default database:
+Refresh dynamic market metadata before building GMTrade events:
+
+```bash
+node --env-file=.env dist/cli.js markets-sync --platform GMTRADE --force
+```
+
+Then fetch and build independently:
+
+```bash
+node --env-file=.env dist/cli.js source-fetch \
+  --platform GMTRADE \
+  --from-slot 319900000 \
+  --to-slot 330000000 \
+  --resume
+
+node --env-file=.env dist/cli.js event-build \
+  --platform GMTRADE \
+  --resume
+```
+
+## Canonical storage
+
+The current POC still uses the existing verbose `event_logs` schema so output remains comparable with earlier runs. The new local archive is the durable replay source. A later migration can safely replace the canonical table with a compact LuckyPlans `PerpTradingEventLog` schema without touching SQD.
+
+Default canonical database:
 
 ```text
 data/solana-perps-poc.sqlite
 ```
 
-Primary table:
-
-```text
-event_logs
-```
-
-View counts:
+Useful commands:
 
 ```bash
 node --env-file=.env dist/cli.js stats
+node --env-file=.env dist/cli.js events --platform JUPITER --limit 20 --order desc
+node --env-file=.env dist/cli.js leaderboard --platform JUPITER --limit 100
 ```
 
-View recent Jupiter actions:
+## Validation boundary
 
-```bash
-node --env-file=.env dist/cli.js events \
-  --platform JUPITER \
-  --limit 20 \
-  --order desc
-```
-
-Filter closes:
-
-```bash
-node --env-file=.env dist/cli.js events \
-  --platform JUPITER \
-  --operation close \
-  --limit 100 \
-  --order desc
-```
-
-Canonical operations:
-
-```text
-open
-close
-increaseSize
-decreaseSize
-increaseLeverage
-decreaseLeverage
-pnlWithdraw
-```
-
-## Leaderboard
-
-Rebuild from canonical history:
-
-```bash
-node --env-file=.env dist/cli.js leaderboard-rebuild \
-  --platform JUPITER
-```
-
-Query:
-
-```bash
-node --env-file=.env dist/cli.js leaderboard \
-  --platform JUPITER \
-  --sortBy netPnl \
-  --minActions 10 \
-  --limit 100
-```
-
-Metrics include gross realized PnL, fees, net realized PnL, volume, actions, winning/losing closes, win rate, liquidation count, and realized-PnL drawdown.
-
-## HTTP server
-
-```bash
-node --env-file=.env dist/cli.js serve
-```
-
-Default URL:
-
-```text
-http://127.0.0.1:3100
-```
-
-Important endpoints:
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | process and provider status |
-| GET | `/sqd/status?from=...&to=...` | Portal metadata and resolved slots |
-| GET | `/event-logs` | canonical events |
-| GET | `/leaderboard` | trader ranking |
-| GET | `/markets` | active market registry |
-| GET | `/unknown-markets` | unresolved source market addresses |
-| GET | `/backfills` | backfill jobs |
-| POST | `/admin/backfill` | run an SQD backfill |
-| POST | `/admin/markets/sync` | refresh market metadata |
-| POST | `/admin/leaderboard/rebuild` | rebuild daily aggregates |
-| POST | `/admin/parquet-export` | export canonical partitions |
-
-Example REST backfill:
-
-```bash
-curl -X POST http://127.0.0.1:3100/admin/backfill \
-  -H 'content-type: application/json' \
-  -d '{
-    "platform": "JUPITER",
-    "from": "2025-01-01T00:00:00Z",
-    "to": "2025-01-02T00:00:00Z",
-    "batchSlots": 25000,
-    "resume": true
-  }'
-```
-
-## Idempotency and failure behavior
-
-Every canonical source row is identified by:
-
-```text
-platform
-+ transaction signature
-+ outer instruction index
-+ inner instruction path encoding
-+ event discriminator
-```
-
-The cursor advances only after the complete application slot window succeeds. Re-running a failed window is safe: previously committed actions are reported as duplicates.
-
-A supported discriminator that cannot be decoded is fatal for that window. A different Anchor CPI event emitted by the same program is counted as `filteredEvents` and does not stop ingestion.
-
-## SQD source-coordinate mapping
-
-SQD reports an instruction call-tree address such as:
-
-```text
-[3, 0]
-```
-
-The POC maps this to the existing LuckyPlans-style coordinates:
-
-```text
-outerInstructionIndex = 4
-innerInstructionIndex = 1
-```
-
-Deeper paths are deterministically encoded in base 10,000 so they remain unique inside the current integer schema. The recommended production model is to persist the complete instruction-address array as well as conventional outer/inner fields.
-
-## Parquet export
-
-```bash
-npm run parquet:install
-node --env-file=.env dist/cli.js parquet-export \
-  --platform JUPITER \
-  --from 2025-01-01 \
-  --to 2025-02-01 \
-  --overwrite
-```
-
-Output layout:
-
-```text
-data/parquet/
-  platform=JUPITER/year=2025/month=01/canonical-actions.parquet
-```
-
-Raw Solana transactions and raw instruction bytes are never exported.
-
-## Legacy Dune JSONL import
-
-Direct Dune API execution has been removed. The old row converter remains only to import files already downloaded:
-
-```bash
-node --env-file=.env dist/cli.js jsonl-import \
-  --platform JUPITER \
-  --file examples/dune-row.jsonl
-```
-
-This path does not consume Dune credits.
-
-## Repository structure
-
-```text
-src/
-  backfill/
-    sqd-client.ts
-    sqd-backfill.service.ts
-    dune-row.ts                 legacy JSONL converter only
-    jsonl-import.service.ts
-  codec/                        Base58, Borsh, Anchor CPI helpers
-  domain/                       canonical provider-neutral model
-  platforms/
-    jupiter/                    version-aware event decoders and adapter
-    gmtrade/                    TradeEvent decoder and adapter
-  markets/                      Jupiter static and GMTrade dynamic metadata
-  services/                     ingestion, events, leaderboard, market registry
-  storage/                      SQLite persistence
-  export/                       optional Parquet bridge
-  http/                         standalone POC API
-
-docs/
-  ARCHITECTURE.md
-  MIGRATION_TO_LUCKYPLANS.md
-  PROTOCOL_INTERFACES.md
-  DATA_QUALITY.md
-  VALIDATION.md
-```
-
-## Production boundary
-
-The default SQD endpoint is a public development endpoint. Before using it as a permanent production dependency, measure throughput and provider limits and choose one of:
-
-- an SQD production Portal plan
-- an SQD-managed indexer
-- a self-hosted Portal
-
-The provider-neutral `SqdClient` boundary means that transition requires a URL/configuration change rather than a rewrite of Jupiter, GMTrade, storage, or leaderboard logic.
+The automated suite covers chunk immutability, checksum verification, ordered replay, gap detection, local event filtering, per-chunk build resume, Jupiter legacy schemas, GMTrade normalization, and the 10-retry default. The packaging environment could not resolve `portal.sqd.dev`, so run `sqd-status` or a short `source-fetch` on a network-enabled machine for live verification.

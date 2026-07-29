@@ -11,6 +11,8 @@ export interface AppConfig {
   solanaCommitment: 'processed' | 'confirmed' | 'finalized';
   solanaRequestRetries: number;
   sqdPortalUrl: string;
+  sourceArchiveDir: string;
+  eventBuildBatchSize: number;
   sqdSlotBatchSize: number;
   sqdRequestTimeoutMs: number;
   sqdMaxRetries: number;
@@ -99,9 +101,11 @@ export function loadConfig(): AppConfig {
     sqdPortalUrl:
       env('SQD_PORTAL_URL')
       ?? 'https://portal.sqd.dev/datasets/solana-mainnet',
+    sourceArchiveDir: resolve(env('SOURCE_ARCHIVE_DIR') ?? './data/source-archive'),
+    eventBuildBatchSize: integer(['EVENT_BUILD_BATCH_SIZE'], 1_000),
     sqdSlotBatchSize: integer(['SQD_SLOT_BATCH_SIZE'], 25_000),
     sqdRequestTimeoutMs: integer(['SQD_REQUEST_TIMEOUT_MS'], 120_000),
-    sqdMaxRetries: integer(['SQD_MAX_RETRIES'], 8),
+    sqdMaxRetries: integer(['SQD_MAX_RETRIES'], 10),
     sqdRetryBaseMs: integer(['SQD_RETRY_BASE_MS'], 1_000),
     sqdRetryMaxMs: integer(['SQD_RETRY_MAX_MS'], 30_000),
     sqdRequestIntervalMs: integer(['SQD_REQUEST_INTERVAL_MS'], 650),

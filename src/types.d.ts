@@ -3,13 +3,15 @@ declare module 'node:crypto' { export function createHash(name: string): any; ex
 declare module 'node:fs' {
   export function existsSync(path: string): boolean;
   export function readFileSync(path: string, encoding?: string): any;
-  export function writeFileSync(path: string, data: any): void;
+  export function writeFileSync(path: string, data: any, options?: any): void;
   export function appendFileSync(path: string, data: string): void;
   export function mkdirSync(path: string, options?: any): void;
   export function createReadStream(path: string, options?: any): any;
   export function unlinkSync(path: string): void;
   export function copyFileSync(source: string, destination: string): void;
   export function renameSync(source: string, destination: string): void;
+  export function readdirSync(path: string): string[];
+  export function statSync(path: string): any;
 }
 declare module 'node:path' {
   export function resolve(...parts: string[]): string;
@@ -36,3 +38,7 @@ declare const require: any;
 declare const module: any;
 
 declare const __dirname: string;
+declare module 'node:zlib' {
+  export function gzipSync(data: any, options?: any): any;
+  export function gunzipSync(data: any, options?: any): any;
+}
