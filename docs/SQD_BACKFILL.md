@@ -66,3 +66,40 @@ Increase slot size when:
 - request overhead dominates
 
 Always compare `portalInstructions`, `targetInstructions`, `inserted`, and `failed` after changing the batch size.
+
+
+## Related transaction inclusion
+
+The instruction selector uses SQD's current relation syntax:
+
+```json
+{
+  "where": {
+    "programId": ["..."],
+    "d8": ["0xe445a52e51cb9a1d"],
+    "isCommitted": true
+  },
+  "include": {
+    "transaction": true
+  }
+}
+```
+
+Requesting `fields.transaction.signatures` selects the transaction columns, but it does not by itself include the related transaction rows. The raw Portal selector flag `transaction: true` is required so `instruction.transactionIndex` can be resolved to its signature without fetching every transaction in the block.
+
+## Raw Portal request shape
+
+This project posts directly to `/finalized-stream`. The raw Portal API expects instruction filters and relation flags at the same level:
+
+```json
+{
+  "instructions": [{
+    "programId": ["PROGRAM_ID"],
+    "d8": ["0xe445a52e51cb9a1d"],
+    "isCommitted": true,
+    "transaction": true
+  }]
+}
+```
+
+Do not wrap these values in `where` or `include`; those wrappers belong to higher-level SDK builder types and are rejected by the raw HTTP endpoint.

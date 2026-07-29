@@ -245,14 +245,26 @@ export function sqdBlockToInstructions(
       instruction.transactionIndex ?? instruction.transaction_index,
       'instruction.transactionIndex',
     );
-    const transaction = transactionMap.get(transactionIndex);
-    const signature = transaction?.signatures?.[0];
+    let transaction = transactionMap.get(transactionIndex);
+    // Portal relation responses are filtered. Older/default field selections may omit
+    // transactionIndex, leaving one related transaction at array position 0 while
+    // the instruction retains its original block transaction index. Prefer the
+    // explicit index, but safely use the sole returned transaction as a fallback.
+    if (!transaction && transactionMap.size === 1) {
+      transaction = transactionMap.values().next().value as SqdTransaction | undefined;
+    }
+    const signature = getTransactionSignature(transaction);
     if (!signature) {
+      const availableIndexes = [...transactionMap.keys()].slice(0, 20).join(', ');
+      const transactionFields = transaction ? Object.keys(transaction).join(', ') : 'transaction not included';
       throw new Error(
-        `SQD instruction at slot ${slot} transaction ${transactionIndex} has no transaction signature`,
+        `SQD instruction at slot ${slot} transaction ${transactionIndex} has no transaction signature ` +
+        `(fields: ${transactionFields}; available transaction indexes: ${availableIndexes || 'none'}). ` +
+        `Ensure fields.transaction includes transactionIndex and signatures, and the raw Portal ` +
+        `instruction selector includes { transaction: true }.`,
       );
     }
-    if (transaction.err !== null && transaction.err !== undefined) continue;
+    if (transaction?.err !== null && transaction?.err !== undefined) continue;
 
     const address = instruction.instructionAddress ?? instruction.instruction_address;
     if (!Array.isArray(address) || address.length === 0) {
@@ -279,6 +291,24 @@ export function sqdBlockToInstructions(
     filteredEvents,
     instructions,
   };
+}
+
+
+export function getTransactionSignature(transaction?: SqdTransaction): string | undefined {
+  if (!transaction) return undefined;
+  if (typeof transaction.signature === 'string' && transaction.signature.length > 0) {
+    return transaction.signature;
+  }
+  if (typeof transaction.signatures === 'string' && transaction.signatures.length > 0) {
+    return transaction.signatures;
+  }
+  if (Array.isArray(transaction.signatures)) {
+    const signature = transaction.signatures.find(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    );
+    return signature;
+  }
+  return undefined;
 }
 
 export function encodeInnerInstructionAddress(address: number[]): number {

@@ -30,7 +30,8 @@ export interface SqdTransaction {
   transactionIndex?: number;
   transaction_index?: number;
   index?: number;
-  signatures?: string[];
+  signatures?: string[] | string;
+  signature?: string;
   err?: unknown;
 }
 
@@ -147,7 +148,7 @@ export class SqdClient {
           toBlock: input.toSlot,
           fields: {
             block: { number: true, timestamp: true },
-            transaction: { signatures: true, err: true },
+            transaction: { transactionIndex: true, signatures: true, err: true },
             instruction: {
               programId: true,
               data: true,
@@ -161,6 +162,7 @@ export class SqdClient {
             programId: [input.programId],
             d8: [d8],
             isCommitted: true,
+            transaction: true,
           }],
         }),
       });

@@ -2,7 +2,7 @@
 
 A standalone, backfill-only TypeScript proof of concept for indexing **Jupiter Perps** and **GMTrade** into a LuckyPlans-compatible canonical event-log and leaderboard model.
 
-The direct historical source is now **SQD Portal**, not Dune:
+The direct historical source is now **SQD Portal**, not Dune. The implementation calls the raw Portal HTTP API, whose instruction selectors are flat objects such as `{ programId, d8, isCommitted, transaction }` rather than the `where` / `include` wrappers used by the higher-level SDK builder:
 
 ```text
 SQD Solana finalized instruction stream

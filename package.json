@@ -1,6 +1,6 @@
 {
   "name": "luckyplans-solana-perps-backfill-poc",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "private": true,
   "description": "SQD Portal backfill-only GMTrade and Jupiter Perps event indexing, canonical trade history, Parquet archive, and leaderboard proof of concept for LuckyPlans.",
   "license": "UNLICENSED",
@@ -16,7 +16,7 @@
     "cli": "npm run build && node --no-warnings=ExperimentalWarning dist/cli.js",
     "markets:sync": "npm run build && node --no-warnings=ExperimentalWarning dist/cli.js markets-sync --platform ALL --force",
     "leaderboard:rebuild": "npm run build && node --no-warnings=ExperimentalWarning dist/cli.js leaderboard-rebuild",
-    "parquet:install": "python3 -m pip install -r requirements-parquet.txt",
+    "parquet:install": "python -m pip install -r requirements-parquet.txt",
     "parquet:export": "npm run build && node --no-warnings=ExperimentalWarning dist/cli.js parquet-export",
     "test": "npm run clean && npm run build && node --no-warnings=ExperimentalWarning --test test/*.test.js",
     "backfill:jupiter": "npm run build && node --no-warnings=ExperimentalWarning dist/cli.js backfill --platform JUPITER",

@@ -62,7 +62,11 @@ test('SQD follows stream continuation boundaries until the requested slot is com
   assert.equal(bodies[0].toBlock, 109);
   assert.equal(bodies[0].instructions[0].d8[0], '0xe445a52e51cb9a1d');
   assert.equal(bodies[0].instructions[0].isCommitted, true);
+  assert.equal(bodies[0].instructions[0].transaction, true);
+  assert.equal('where' in bodies[0].instructions[0], false);
+  assert.equal('include' in bodies[0].instructions[0], false);
   assert.equal(bodies[0].fields.instruction.instructionAddress, true);
+  assert.equal(bodies[0].fields.transaction.transactionIndex, true);
   assert.equal(bodies[0].fields.transaction.signatures, true);
 });
 

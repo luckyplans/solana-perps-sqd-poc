@@ -7,6 +7,7 @@ const {
   SqdBackfillService,
   sqdBlockToInstructions,
   encodeInnerInstructionAddress,
+  getTransactionSignature,
 } = require('../dist/backfill/sqd-backfill.service');
 const { base58Encode } = require('../dist/codec/base58');
 const { PlatformAdapterRegistry } = require('../dist/platforms/registry');
@@ -93,6 +94,91 @@ test('SQD preserves direct CPI indexes and safely encodes deeper CPI paths', () 
   assert.equal(encodeInnerInstructionAddress([0]), 1);
   assert.equal(encodeInnerInstructionAddress([4]), 5);
   assert.equal(encodeInnerInstructionAddress([1, 3]), 20004);
+});
+
+
+test('SQD accepts both current signatures array and legacy singular signature transaction shapes', () => {
+  assert.equal(getTransactionSignature({ signatures: ['array-signature'] }), 'array-signature');
+  assert.equal(getTransactionSignature({ signature: 'singular-signature' }), 'singular-signature');
+  assert.equal(getTransactionSignature({ signatures: 'string-signature' }), 'string-signature');
+  assert.equal(getTransactionSignature({ signatures: [] }), undefined);
+});
+
+test('SQD maps high transaction indexes when the related transaction is included by the instruction selector', () => {
+  const registry = new PlatformAdapterRegistry();
+  const adapter = registry.get(Platform.JUPITER);
+  const data = jupiterIncrease({
+    position: key(21),
+    isLong: true,
+    market: key(22),
+    collateral: key(23),
+    positionSizeUsd: 100_000_000n,
+    positionMint: key(24),
+    request: key(25),
+    requestMint: key(26),
+    collateralDeltaUsd: 20_000_000n,
+    owner: key(27),
+    pool: key(28),
+    sizeDeltaUsd: 100_000_000n,
+    price: 150_000_000n,
+    feeUsd: 600_000n,
+    openTime: 1735689600n,
+  });
+
+  const result = sqdBlockToInstructions(Platform.JUPITER, adapter, {
+    header: { number: 311081164, timestamp: 1735689600 },
+    transactions: [{ transactionIndex: 1182, signatures: ['high-index-signature'], err: null }],
+    instructions: [{
+      programId: adapter.programId,
+      data: base58Encode(data),
+      transactionIndex: 1182,
+      instructionAddress: [4, 0],
+      isCommitted: true,
+      error: null,
+    }],
+  });
+
+  assert.equal(result.instructions.length, 1);
+  assert.equal(result.instructions[0].signature, 'high-index-signature');
+});
+
+
+test('SQD maps a sole related transaction when Portal omits transactionIndex', () => {
+  const registry = new PlatformAdapterRegistry();
+  const adapter = registry.get(Platform.JUPITER);
+  const data = jupiterIncrease({
+    position: key(31),
+    isLong: true,
+    market: key(32),
+    collateral: key(33),
+    positionSizeUsd: 100_000_000n,
+    positionMint: key(34),
+    request: key(35),
+    requestMint: key(36),
+    collateralDeltaUsd: 20_000_000n,
+    owner: key(37),
+    pool: key(38),
+    sizeDeltaUsd: 100_000_000n,
+    price: 150_000_000n,
+    feeUsd: 600_000n,
+    openTime: 1735689600n,
+  });
+
+  const result = sqdBlockToInstructions(Platform.JUPITER, adapter, {
+    header: { number: 311081164, timestamp: 1735689600 },
+    transactions: [{ signatures: ['filtered-relation-signature'], err: null }],
+    instructions: [{
+      programId: adapter.programId,
+      data: base58Encode(data),
+      transactionIndex: 1182,
+      instructionAddress: [4, 0],
+      isCommitted: true,
+      error: null,
+    }],
+  });
+
+  assert.equal(result.instructions.length, 1);
+  assert.equal(result.instructions[0].signature, 'filtered-relation-signature');
 });
 
 test('SQD resume at an already completed slot boundary is a no-op', async (t) => {
