@@ -1,0 +1,139 @@
+// Reference snippet. Merge into the existing LuckyPlans schema rather than copying blindly.
+
+model SolanaPerpEventLog {
+  id                    String   @id @default(cuid())
+  platform              Platform
+  programId             String
+  ingestionSource       String
+  signature             String
+  slot                  BigInt
+  blockTime             DateTime
+  outerInstructionIndex Int
+  innerInstructionIndex Int
+  eventName             String
+  eventDiscriminator    String
+  orderKey              String?
+  requestKey            String?
+  positionKey           String
+  address               String
+  marketAddress         String
+  collateralAddress     String?
+  pair                  String
+  operation             PerpTradeHistoryOperation
+  closeReason           String?
+  dataQuality           String
+  liquidation           Boolean
+
+  // Prefer Decimal or exact integer columns. Avoid Float for accounting values.
+  usdPnl                Decimal  @db.Decimal(38, 6)
+  usdBasePnl            Decimal  @db.Decimal(38, 6)
+  usdFee                Decimal  @db.Decimal(38, 6)
+  sizeInUsd             Decimal  @db.Decimal(38, 6)
+  leverage              Decimal  @db.Decimal(38, 6)
+  collateralInUsd       Decimal  @db.Decimal(38, 6)
+  collateralDeltaUsd    Decimal  @db.Decimal(38, 6)
+  sizeDeltaUsd          Decimal  @db.Decimal(38, 6)
+  leverageDelta         Decimal  @db.Decimal(38, 6)
+  isLong                Boolean
+  price                 Decimal  @db.Decimal(38, 6)
+  collateralUsdPrice    Decimal  @db.Decimal(38, 6)
+
+  // Keep during the POC/reconciliation phase; omit from compact archive tables.
+  decodedEvent          Json?
+  createdAt             DateTime @default(now())
+
+  @@unique([platform, signature, outerInstructionIndex, innerInstructionIndex, eventDiscriminator])
+  @@index([platform, address, blockTime])
+  @@index([platform, positionKey, blockTime])
+  @@index([platform, slot])
+}
+
+model SolanaPerpPositionState {
+  platform          Platform
+  positionKey       String
+  address           String
+  marketAddress     String
+  collateralAddress String?
+  pair              String
+  isLong            Boolean
+  sizeInUsd         Decimal  @db.Decimal(38, 6)
+  collateralInUsd   Decimal  @db.Decimal(38, 6)
+  leverage          Decimal  @db.Decimal(38, 6)
+  lastPrice         Decimal  @db.Decimal(38, 6)
+  openedAt          DateTime?
+  closed            Boolean
+  lastSlot          BigInt
+  updatedAt         DateTime
+
+  @@id([platform, positionKey])
+  @@index([platform, address, closed])
+}
+
+model SolanaPerpMarket {
+  id                     String   @id @default(cuid())
+  platform               Platform
+  marketAddress          String
+  collateralAddress      String?  @default("")
+  marketAccountAddress   String?
+  indexTokenAddress      String?
+  pair                   String
+  source                 String
+  enabled                Boolean  @default(true)
+  indexTokenDecimals     Int?
+  collateralTokenDecimals Int?
+  collateralIsStable     Boolean?
+  collateralUsdPrice     Decimal? @db.Decimal(38, 6)
+  longCollateralAddress  String?
+  longCollateralDecimals Int?
+  shortCollateralAddress String?
+  shortCollateralDecimals Int?
+  verifiedAt             DateTime?
+  notes                  String?
+  updatedAt              DateTime @updatedAt
+
+  @@unique([platform, marketAddress, collateralAddress])
+  @@index([platform, enabled, pair])
+}
+
+model SolanaPerpLeaderboardDaily {
+  platform              Platform
+  address               String
+  date                   DateTime @db.Date
+  grossPnl              Decimal  @db.Decimal(38, 6)
+  feesPaid              Decimal  @db.Decimal(38, 6)
+  netPnl                Decimal  @db.Decimal(38, 6)
+  volume                Decimal  @db.Decimal(38, 6)
+  actionCount           Int
+  realizedActionCount   Int
+  winningActionCount    Int
+  losingActionCount     Int
+  liquidationCount      Int
+  firstEventAt          DateTime
+  lastEventAt           DateTime
+
+  @@id([platform, address, date])
+  @@index([platform, date, netPnl])
+}
+
+model SolanaPerpIngestionCursor {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model SolanaPerpBackfillJob {
+  id          String   @id @default(cuid())
+  platform    Platform
+  provider    String
+  status      String
+  parameters  Json
+  seen        Int      @default(0)
+  decoded     Int      @default(0)
+  inserted    Int      @default(0)
+  skipped     Int      @default(0)
+  error       String?
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([platform, createdAt])
+}

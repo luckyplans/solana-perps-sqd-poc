@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/*.jsonl
+coverage/
+.DS_Store
+data/parquet/
+*.parquet
